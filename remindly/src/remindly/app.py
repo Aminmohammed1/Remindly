@@ -26,12 +26,20 @@ async def whatsapp_bot(request: Request):
     # Twilio sends form-encoded POST
     form = await request.form()
     msg = form.get("Body")
+    print(f"this is what Amin sent: {msg}")
     sender = form.get("From")
 
-    parsed_date = dateparser.parse(msg, settings={'PREFER_DATES_FROM': 'future'})
+    # parsed_date = dateparser.parse(msg, settings={'PREFER_DATES_FROM': 'future'})
+    import re
+
+    # Extract time-like or date-like phrases
+    cleaned_msg = re.sub(r"(?i)remind me to|remind me|about|to", "", msg).strip()
+    parsed_date = dateparser.parse(cleaned_msg, settings={'PREFER_DATES_FROM': 'future'})
+
 
     if parsed_date:
         reminder_time = parsed_date - timedelta(minutes=15)
+        print(reminder_time)
         scheduler.add_job(send_reminder, 'date', run_date=reminder_time, args=[sender, msg])
         reply_text = f"✅ Got it! I’ll remind you 15 minutes before {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
     else:
