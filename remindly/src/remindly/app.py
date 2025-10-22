@@ -7,9 +7,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
+from groq import Groq
+import json
 
 # Load .env
 load_dotenv()
+
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
 
 account_sid = os.getenv("TWILIO_ACCOUNT_SID")
 auth_token = os.getenv("TWILIO_AUTH_TOKEN")
@@ -50,6 +55,49 @@ def send_reminder(to, task):
         from_=twilio_whatsapp_number,
         to=to
     )
+
+def llm_api_call(prompt: str) -> str:
+    """Calls the Groq LLM and returns the raw text response."""
+    completion = client.chat.completions.create(
+        model="llama-3.1-70b-versatile",  # or another model you prefer
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return completion.choices[0].message.content.strip()
+
+
+def parse_with_llm(message: str):
+    """Uses the LLM to extract task and datetime."""
+    prompt = f"""
+    Extract the task and the exact date/time from this reminder request:
+    "{message}"
+    Respond strictly in JSON format with keys 'task' and 'datetime'.
+    Example:
+    {{
+        "task": "call mom",
+        "datetime": "tomorrow at 9 PM"
+    }}
+    """
+
+    response = llm_api_call(prompt)
+
+    # Handle LLM response safely
+    try:
+        data = json.loads(response)
+        return data["task"], data["datetime"]
+    except json.JSONDecodeError:
+        # If LLM doesn’t return valid JSON, handle gracefully
+        return message, None
+
+def parse_with_llm(message):
+    prompt = f"""
+    Extract the task and the exact date/time from this reminder request:
+    "{message}"
+    Respond in JSON with 'task' and 'datetime'.
+    """
+    # pseudo-code: call Grok/OpenAI API
+    response = llm_api_call(prompt)
+    data = json.loads(response)
+    return data["task"], data["datetime"]    
 
 if __name__ == "__main__":
     import uvicorn
