@@ -86,3 +86,6 @@ Thumbs.db
 # dotenv
 .env
 .env.*.local
+__pycache__/
+*.py[cod]
+*.cpython-*.pyc
