@@ -30,7 +30,7 @@ app = FastAPI()
 async def root():
     return "I am ALIVE!"
 
-@app.post("/whatsapp", response_class=PlainTextResponse)
+@app.post("/whatsapp")
 async def whatsapp_bot(request: Request):
     # Twilio sends form-encoded POST
     form = await request.form()
@@ -45,12 +45,13 @@ async def whatsapp_bot(request: Request):
     # cleaned_msg = re.sub(r"(?i)remind me to|remind me|about|to", "", msg).strip()
     # parsed_date = dateparser.parse(cleaned_msg, settings={'PREFER_DATES_FROM': 'future'})
     task, datetime_str = parse_with_llm(msg)
+    print(f"Extracted task: {task}, datetime string: {datetime_str}")
     parsed_date = dateparser.parse(datetime_str, settings={'PREFER_DATES_FROM': 'future'})
 
     if parsed_date:
         reminder_time = parsed_date - timedelta(minutes=1)
         print(reminder_time)
-        scheduler.add_job(send_reminder, 'date', run_date=reminder_time, args=[sender, msg])
+        scheduler.add_job(send_reminder, 'date', run_date=reminder_time, args=[sender, task])
         reply_text = f"✅ Got it! I’ll remind you 1 minute before {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
     else:
         reply_text = ("❌ Sorry, I couldn’t understand that.\n"
@@ -59,8 +60,15 @@ async def whatsapp_bot(request: Request):
 
     # Return Twilio-compatible XML
     response = MessagingResponse()
+    print(f"this is replytext {reply_text}")
+    print(dir(response))
     response.message(reply_text)
-    return str(response)
+    # msg_text = response.messages[0].body
+    twilio_client.messages.create(
+        body=reply_text, 
+        from_=twilio_whatsapp_number,
+        to=sender
+    )
 
 def send_reminder(to, task):
     twilio_client.messages.create(
@@ -78,15 +86,16 @@ def llm_api_call(prompt: str) -> str:
     # Some versions of the Groq SDK expose `chat.create`, others expose
     # `chat.completions.create`. Try both to be resilient to SDK changes.
     try:
-        completion = groq_client.chat.create(
-            model="llama-3.1-70b-versatile",
-            messages=[{"role": "user", "content": prompt}]
-        )
+        completion = groq_client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt}]
+)
+        
     except AttributeError:
         # Try the older/newer alternate method name
         try:
             completion = groq_client.chat.completions.create(
-                model="llama-3.1-70b-versatile",
+                model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt}]
             )
         except Exception as e:
@@ -111,7 +120,7 @@ def parse_with_llm(message: str):
     Respond strictly in JSON format with keys 'task' and 'datetime'.
     Example:
     user prompt: "Remind me to call mom tomorrow at 9 PM"
-    output(ONLY JSON,NO EXTRA TEXT):
+    output(ONLY JSON,NO EXTRA TEXT, make the task like a command not just a description):
     {{
         "task": "call your mom",
         "datetime": "tomorrow at 9 PM"
