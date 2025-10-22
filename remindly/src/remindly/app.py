@@ -13,18 +13,22 @@ import json
 # Load .env
 load_dotenv()
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 
 account_sid = os.getenv("TWILIO_ACCOUNT_SID")
 auth_token = os.getenv("TWILIO_AUTH_TOKEN")
 twilio_whatsapp_number = "whatsapp:+14155238886"
 
-client = Client(account_sid, auth_token)
+twilio_client = Client(account_sid, auth_token)
 scheduler = BackgroundScheduler()
 scheduler.start()
 
 app = FastAPI()
+
+@app.get("/")
+async def root():
+    return "I am ALIVE!"
 
 @app.post("/whatsapp", response_class=PlainTextResponse)
 async def whatsapp_bot(request: Request):
@@ -38,15 +42,16 @@ async def whatsapp_bot(request: Request):
     import re
 
     # Extract time-like or date-like phrases
-    cleaned_msg = re.sub(r"(?i)remind me to|remind me|about|to", "", msg).strip()
-    parsed_date = dateparser.parse(cleaned_msg, settings={'PREFER_DATES_FROM': 'future'})
-
+    # cleaned_msg = re.sub(r"(?i)remind me to|remind me|about|to", "", msg).strip()
+    # parsed_date = dateparser.parse(cleaned_msg, settings={'PREFER_DATES_FROM': 'future'})
+    task, datetime_str = parse_with_llm(msg)
+    parsed_date = dateparser.parse(datetime_str, settings={'PREFER_DATES_FROM': 'future'})
 
     if parsed_date:
-        reminder_time = parsed_date - timedelta(minutes=15)
+        reminder_time = parsed_date - timedelta(minutes=1)
         print(reminder_time)
         scheduler.add_job(send_reminder, 'date', run_date=reminder_time, args=[sender, msg])
-        reply_text = f"✅ Got it! I’ll remind you 15 minutes before {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
+        reply_text = f"✅ Got it! I’ll remind you 1 minute before {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
     else:
         reply_text = ("❌ Sorry, I couldn’t understand that.\n"
                       "Try something like:\n"
@@ -58,7 +63,7 @@ async def whatsapp_bot(request: Request):
     return str(response)
 
 def send_reminder(to, task):
-    client.messages.create(
+    twilio_client.messages.create(
         body=f"⏰ Reminder: {task}",
         from_=twilio_whatsapp_number,
         to=to
@@ -66,11 +71,36 @@ def send_reminder(to, task):
 
 def llm_api_call(prompt: str) -> str:
     """Calls the Groq LLM and returns the raw text response."""
-    completion = client.chat.completions.create(
-        model="llama-3.1-70b-versatile",  # or another model you prefer
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return completion.choices[0].message.content.strip()
+    # Use the Groq client to create a chat completion. The Groq SDK exposes a
+    # `chat.create` method on the client.chat object. We try a couple of
+    # extraction patterns to be resilient to minor SDK response-shape
+    # differences.
+    # Some versions of the Groq SDK expose `chat.create`, others expose
+    # `chat.completions.create`. Try both to be resilient to SDK changes.
+    try:
+        completion = groq_client.chat.create(
+            model="llama-3.1-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+    except AttributeError:
+        # Try the older/newer alternate method name
+        try:
+            completion = groq_client.chat.completions.create(
+                model="llama-3.1-70b-versatile",
+                messages=[{"role": "user", "content": prompt}]
+            )
+        except Exception as e:
+            return f"LLM call failed: {e}"
+
+    # Extract text from known possible response shapes
+    try:
+        return completion.choices[0].message.content
+    except Exception:
+        try:
+            return completion.choices[0].message["content"]
+        except Exception:
+            # Fallback: stringified response
+            return str(completion)
 
 
 def parse_with_llm(message: str):
@@ -80,32 +110,36 @@ def parse_with_llm(message: str):
     "{message}"
     Respond strictly in JSON format with keys 'task' and 'datetime'.
     Example:
+    user prompt: "Remind me to call mom tomorrow at 9 PM"
+    output(ONLY JSON,NO EXTRA TEXT):
     {{
-        "task": "call mom",
+        "task": "call your mom",
         "datetime": "tomorrow at 9 PM"
     }}
     """
 
     response = llm_api_call(prompt)
-
+    print(response)
     # Handle LLM response safely
     try:
         data = json.loads(response)
+        print(data)
         return data["task"], data["datetime"]
     except json.JSONDecodeError:
         # If LLM doesn’t return valid JSON, handle gracefully
+        print("Failed to parse LLM response as JSON.")
         return message, None
 
-def parse_with_llm(message):
-    prompt = f"""
-    Extract the task and the exact date/time from this reminder request:
-    "{message}"
-    Respond in JSON with 'task' and 'datetime'.
-    """
-    # pseudo-code: call Grok/OpenAI API
-    response = llm_api_call(prompt)
-    data = json.loads(response)
-    return data["task"], data["datetime"]    
+# def parse_with_llm(message):
+#     prompt = f"""
+#     Extract the task and the exact date/time from this reminder request:
+#     "{message}"
+#     Respond in JSON with 'task' and 'datetime'.
+#     """
+#     # pseudo-code: call Grok/OpenAI API
+#     response = llm_api_call(prompt)
+#     data = json.loads(response)
+#     return data["task"], data["datetime"]    
 
 if __name__ == "__main__":
     import uvicorn
