@@ -31,10 +31,13 @@ app = FastAPI()
 @app.get("/make_call")
 async def make_call():
     call = client.calls.create(
-        from_="+19785816814",
-        to=number,
-        url="http://demo.twilio.com/docs/voice.xml",
-    )
+    twiml='''<Response>
+      <Say voice="alice">Heloo Amin from Warangal</Say>
+    </Response>''',
+    from_="+19785816814",
+    to=number,
+)
+
     print(call.sid)
 
 @app.get("/")
