@@ -18,6 +18,8 @@ groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 account_sid = os.getenv("TWILIO_ACCOUNT_SID")
 auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+number=os.getenv("NUMBER")
+client = Client(account_sid, auth_token)
 twilio_whatsapp_number = "whatsapp:+14155238886"
 
 twilio_client = Client(account_sid, auth_token)
@@ -25,6 +27,15 @@ scheduler = BackgroundScheduler()
 scheduler.start()
 
 app = FastAPI()
+
+@app.get("/make_call")
+async def make_call():
+    call = client.calls.create(
+        from_="+19785816814",
+        to=number,
+        url="http://demo.twilio.com/docs/voice.xml",
+    )
+    print(call.sid)
 
 @app.get("/")
 async def root():
