@@ -29,7 +29,7 @@ scheduler.start()
 app = FastAPI()
 
 # @app.get("/make_call")
-async def make_call(task):
+def make_call(task):
     call = client.calls.create(
     twiml=f'''<Response>
       <Say voice="alice">{task}</Say>
@@ -89,76 +89,104 @@ def send_reminder(to, task):
         to=to
     )
 
+import json
+import re
+
 def llm_api_call(prompt: str) -> str:
     """Calls the Groq LLM and returns the raw text response."""
-    # Use the Groq client to create a chat completion. The Groq SDK exposes a
-    # `chat.create` method on the client.chat object. We try a couple of
-    # extraction patterns to be resilient to minor SDK response-shape
-    # differences.
-    # Some versions of the Groq SDK expose `chat.create`, others expose
-    # `chat.completions.create`. Try both to be resilient to SDK changes.
     try:
         completion = groq_client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": prompt}]
-)
-        
+            temperature=0,
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+        )
     except AttributeError:
-        # Try the older/newer alternate method name
+        # Backup call in case of SDK version mismatch
         try:
             completion = groq_client.chat.completions.create(
                 model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
             )
         except Exception as e:
-            return f"LLM call failed: {e}"
+            return json.dumps({"error": f"LLM call failed: {e}"})
 
-    # Extract text from known possible response shapes
+    # Extract text safely
     try:
-        return completion.choices[0].message.content
+        return completion.choices[0].message.content.strip()
     except Exception:
         try:
-            return completion.choices[0].message["content"]
+            return completion.choices[0].message["content"].strip()
         except Exception:
-            # Fallback: stringified response
             return str(completion)
 
 
-def parse_with_llm(message: str):
-    """Uses the LLM to extract task and datetime."""
-    prompt = f"""
-    Extract the task and the exact date/time from below reminder request also identify if user is asking for a call, if YES, add the property "call_intent": true in the final json object, call_intent should be false if user is not asking for a call:
-    "{message}"
-    Respond strictly in JSON format with keys 'task' and 'datetime'.
-    Example:
-    user prompt: "Remind me to text mom tomorrow at 9 PM"
-    output(ONLY JSON,NO EXTRA TEXT, make the task like a command not just a description):
-    {{
-        "task": "text your mom",
-        "datetime": "tomorrow at 9 PM",
-        "call_intent": false
-    }}
-    Example:
-    user prompt: "set a call reminder to buy groceries in 2 hours"
-    output(ONLY JSON,NO EXTRA TEXT, make the task sound like not just a single command but a friendly somewhat descriptive task):
-    {{
-        "task": "Buy your groceries",
-        "datetime": "in 2 hours",
-        "call_intent": true
-    }}
+def extract_json_from_text(text: str) -> dict:
     """
+    Attempts to extract and clean a JSON object from a text string.
+    Returns None if no valid JSON found.
+    """
+    # Use regex to find JSON-like block
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+
+    json_str = match.group(0)
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        # Try to auto-repair common formatting issues
+        json_str = re.sub(r"(\w+):", r'"\1":', json_str)  # unquoted keys
+        json_str = json_str.replace("'", '"')  # single to double quotes
+        try:
+            return json.loads(json_str)
+        except Exception:
+            return None
+
+
+def parse_with_llm(message: str):
+    """Uses the LLM to extract task and datetime in consistent JSON."""
+    prompt = f"""
+You are a strict JSON generator.
+
+Extract the task and datetime from this reminder request, 
+and identify if it includes a call request.
+
+Rules:
+- Respond ONLY with a JSON object.
+- Keys: "task", "datetime", "call_intent"
+- No explanation, no markdown, no text outside JSON.
+
+Example 1:
+Input: "Remind me to text mom tomorrow at 9 PM"
+Output:
+{{
+  "task": "text your mom",
+  "datetime": "tomorrow at 9 PM",
+  "call_intent": false
+}}
+
+Example 2:
+Input: "Set a call reminder to buy groceries in 2 hours"
+Output:
+{{
+  "task": "buy groceries",
+  "datetime": "in 2 hours",
+  "call_intent": true
+}}
+
+Now process:
+"{message}"
+"""
 
     response = llm_api_call(prompt)
-    print(response)
-    # Handle LLM response safely
-    try:
-        data = json.loads(response)
-        print(data)
+    print(f"🔹 Raw LLM response:\n{response}\n")
+
+    data = extract_json_from_text(response)
+    if data and all(k in data for k in ["task", "datetime", "call_intent"]):
         return data["task"], data["datetime"], data["call_intent"]
-    except json.JSONDecodeError:
-        # If LLM doesn’t return valid JSON, handle gracefully
-        print("Failed to parse LLM response as JSON.")
-        return message, None
+
+    print("⚠️ Failed to parse valid JSON. Returning fallback.")
+    return message, None, False
 
 # def parse_with_llm(message):
 #     prompt = f"""
