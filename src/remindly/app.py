@@ -28,11 +28,11 @@ scheduler.start()
 
 app = FastAPI()
 
-@app.get("/make_call")
-async def make_call():
+# @app.get("/make_call")
+async def make_call(task):
     call = client.calls.create(
-    twiml='''<Response>
-      <Say voice="alice">Heloo Amin from Warangal</Say>
+    twiml=f'''<Response>
+      <Say voice="alice">{task}</Say>
     </Response>''',
     from_="+19785816814",
     to=number,
@@ -49,24 +49,22 @@ async def whatsapp_bot(request: Request):
     # Twilio sends form-encoded POST
     form = await request.form()
     msg = form.get("Body")
-    print(f"this is what Amin sent: {msg}")
+    print(f"User msg: {msg}")
     sender = form.get("From")
-
-    # parsed_date = dateparser.parse(msg, settings={'PREFER_DATES_FROM': 'future'})
-    import re
-
-    # Extract time-like or date-like phrases
-    # cleaned_msg = re.sub(r"(?i)remind me to|remind me|about|to", "", msg).strip()
-    # parsed_date = dateparser.parse(cleaned_msg, settings={'PREFER_DATES_FROM': 'future'})
-    task, datetime_str = parse_with_llm(msg)
+    task, datetime_str, call_intent = parse_with_llm(msg)
+    print(f"call_intent: {call_intent}")
     print(f"Extracted task: {task}, datetime string: {datetime_str}")
     parsed_date = dateparser.parse(datetime_str, settings={'PREFER_DATES_FROM': 'future'})
 
     if parsed_date:
         reminder_time = parsed_date - timedelta(minutes=1)
         print(reminder_time)
-        scheduler.add_job(send_reminder, 'date', run_date=reminder_time, args=[sender, task])
-        reply_text = f"✅ Got it! I’ll remind you 1 minute before {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
+        if call_intent:
+            scheduler.add_job(make_call, 'date', run_date=reminder_time, args=[task])
+            reply_text = f"✅ Got it! I’ll call you 1 minute before {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
+        else:
+            scheduler.add_job(send_reminder, 'date', run_date=reminder_time, args=[sender, task])
+            reply_text = f"✅ Got it! I’ll remind you 1 minute before {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
     else:
         reply_text = ("❌ Sorry, I couldn’t understand that.\n"
                       "Try something like:\n"
@@ -129,15 +127,24 @@ def llm_api_call(prompt: str) -> str:
 def parse_with_llm(message: str):
     """Uses the LLM to extract task and datetime."""
     prompt = f"""
-    Extract the task and the exact date/time from this reminder request:
+    Extract the task and the exact date/time from below reminder request also identify if user is asking for a call, if YES, add the property "call_intent": true in the final json object, call_intent should be false if user is not asking for a call:
     "{message}"
     Respond strictly in JSON format with keys 'task' and 'datetime'.
     Example:
-    user prompt: "Remind me to call mom tomorrow at 9 PM"
+    user prompt: "Remind me to text mom tomorrow at 9 PM"
     output(ONLY JSON,NO EXTRA TEXT, make the task like a command not just a description):
     {{
-        "task": "call your mom",
-        "datetime": "tomorrow at 9 PM"
+        "task": "text your mom",
+        "datetime": "tomorrow at 9 PM",
+        "call_intent": false
+    }}
+    Example:
+    user prompt: "set a call reminder to buy groceries in 2 hours"
+    output(ONLY JSON,NO EXTRA TEXT, make the task sound like not just a single command but a friendly somewhat descriptive task):
+    {{
+        "task": "Buy your groceries",
+        "datetime": "in 2 hours",
+        "call_intent": true
     }}
     """
 
@@ -147,7 +154,7 @@ def parse_with_llm(message: str):
     try:
         data = json.loads(response)
         print(data)
-        return data["task"], data["datetime"]
+        return data["task"], data["datetime"], data["call_intent"]
     except json.JSONDecodeError:
         # If LLM doesn’t return valid JSON, handle gracefully
         print("Failed to parse LLM response as JSON.")
