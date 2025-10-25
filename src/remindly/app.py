@@ -51,7 +51,7 @@ async def whatsapp_bot(request: Request):
     msg = form.get("Body")
     print(f"User msg: {msg}")
     sender = form.get("From")
-    task, datetime_str, call_intent = parse_with_llm(msg)
+    task, datetime_str, call_intent, reply = parse_with_llm(msg)
     print(f"call_intent: {call_intent}")
     print(f"Extracted task: {task}, datetime string: {datetime_str}")
     parsed_date = dateparser.parse(datetime_str, settings={'PREFER_DATES_FROM': 'future'})
@@ -61,10 +61,10 @@ async def whatsapp_bot(request: Request):
         print(reminder_time)
         if call_intent:
             scheduler.add_job(make_call, 'date', run_date=reminder_time, args=[task])
-            reply_text = f"✅ Got it! I’ll call you 1 minute before {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
+            reply_text = f"✅ {reply} {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
         else:
             scheduler.add_job(send_reminder, 'date', run_date=reminder_time, args=[sender, task])
-            reply_text = f"✅ Got it! I’ll remind you 1 minute before {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
+            reply_text = f"✅ {reply} {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
     else:
         reply_text = ("❌ Sorry, I couldn’t understand that.\n"
                       "Try something like:\n"
@@ -75,7 +75,6 @@ async def whatsapp_bot(request: Request):
     print(f"this is replytext {reply_text}")
     print(dir(response))
     response.message(reply_text)
-    # msg_text = response.messages[0].body
     twilio_client.messages.create(
         body=reply_text, 
         from_=twilio_whatsapp_number,
@@ -96,7 +95,7 @@ def llm_api_call(prompt: str) -> str:
     """Calls the Groq LLM and returns the raw text response."""
     try:
         completion = groq_client.chat.completions.create(
-            temperature=0,
+            temperature=0.7,
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
         )
@@ -146,32 +145,46 @@ def extract_json_from_text(text: str) -> dict:
 def parse_with_llm(message: str):
     """Uses the LLM to extract task and datetime in consistent JSON."""
     prompt = f"""
-You are a strict JSON generator.
+You are a MULTILINGUAL strict JSON generator.
 
-Extract the task and datetime from this reminder request, 
-and identify if it includes a call request.
+Extract the task(and reword it in the SAME LANGUAGE to be a bit more friendly and descriptive and in the same tense as used in the task) and datetime from this reminder request, 
+and identify if it includes a PHONE CALL request. AND also include "reply" key that has the TRANSLATED verion of "Got it! I will remind you 1 minute before".
 
 Rules:
 - Respond ONLY with a JSON object.
 - Keys: "task", "datetime", "call_intent"
-- No explanation, no markdown, no text outside JSON.
+- task key must be in the SAME LANGUAGE as the input message, use the same tense as used in the task.
+- datetime key must be in ENGLISH LANGUAGE ONLY.
+- reply key must be in the SAME LANGUAGE as the input message.
+- No explanation, no markdown, no text outside JSON.    
 
 Example 1:
 Input: "Remind me to text mom tomorrow at 9 PM"
 Output:
 {{
-  "task": "text your mom",
+  "task": "you have to text your mom",
   "datetime": "tomorrow at 9 PM",
-  "call_intent": false
+  "call_intent": false,
+  "reply": "Got it! I will remind you 1 minute before"
 }}
 
 Example 2:
 Input: "Set a call reminder to buy groceries in 2 hours"
 Output:
 {{
-  "task": "buy groceries",
+  "task": "you have to buy groceries",
   "datetime": "in 2 hours",
-  "call_intent": true
+  "call_intent": true,
+  "reply": "Got it! I will remind you 1 minute before"
+}}
+Example 3:
+Input: "bus tickets book karna hai 2 minute mein, yaad dilao"
+Output:
+{{
+  "task": "tumhe bus tickets book karna hai",
+  "datetime": "in 2 minutes",
+  "call_intent": false,
+  "reply": "Thik hai! Main aapko 1 minute pehle yaad dilaoonga"
 }}
 
 Now process:
@@ -183,21 +196,10 @@ Now process:
 
     data = extract_json_from_text(response)
     if data and all(k in data for k in ["task", "datetime", "call_intent"]):
-        return data["task"], data["datetime"], data["call_intent"]
+        return data["task"], data["datetime"], data["call_intent"], data["reply"]
 
     print("⚠️ Failed to parse valid JSON. Returning fallback.")
     return message, None, False
-
-# def parse_with_llm(message):
-#     prompt = f"""
-#     Extract the task and the exact date/time from this reminder request:
-#     "{message}"
-#     Respond in JSON with 'task' and 'datetime'.
-#     """
-#     # pseudo-code: call Grok/OpenAI API
-#     response = llm_api_call(prompt)
-#     data = json.loads(response)
-#     return data["task"], data["datetime"]    
 
 if __name__ == "__main__":
     import uvicorn
