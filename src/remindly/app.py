@@ -11,6 +11,13 @@ import phonenumbers
 from phonenumbers import timezone as phonenumbers_timezone
 import json 
 import re
+from db_connection import get_connection
+try:
+    conn = get_connection()
+    cursor = conn.cursor()
+    print("Database connection established.")
+except Exception as e:
+    print(f"Failed to connect to the database: {e}")
 
 # Load .env
 load_dotenv()
@@ -31,13 +38,13 @@ scheduler.start()
 app = FastAPI()
 
 # @app.get("/make_call")
-def make_call(task):
+def make_call(task,to: str=os.getenv("AMIN_NUMBER","")):
     call = client.calls.create(
     twiml=f'''<Response>
       <Say voice="alice">{task}</Say>
     </Response>''',
     from_="+19785816814",
-    to=number,
+    to=to,
 )
 
     print(call.sid)
@@ -69,7 +76,16 @@ async def whatsapp_bot(request: Request):
         reminder_time = parsed_date - timedelta(minutes=1)
         print(reminder_time)
         if call_intent:
-            scheduler.add_job(make_call, 'date', run_date=reminder_time, args=[task])
+            receiver=sender #since the person who is sending the call reminder is the receiver, just to make code readable
+            insert_query = """
+INSERT INTO "UserTasks" (phone_number, task, trigger_timestamp, call_intent)
+VALUES (%s, %s, %s, %s)
+RETURNING id;
+"""
+            cursor.execute(insert_query, (receiver, task, reminder_time, call_intent))
+            inserted_id = cursor.fetchone()[0]
+            print(f"Inserted row ID: {inserted_id}")
+            scheduler.add_job(make_call, 'date', run_date=reminder_time, args=[task,receiver])
             reply_text = f"✅ {reply} {parsed_date.strftime('%I:%M %p, %d %B %Y')}."
         else:
             scheduler.add_job(send_reminder, 'date', run_date=reminder_time, args=[sender, task])
