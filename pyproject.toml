@@ -13,7 +13,8 @@ dependencies = [
     "dateparser (>=1.2.2,<2.0.0)",
     "apscheduler (>=3.11.0,<4.0.0)",
     "openai (>=2.6.0,<3.0.0)",
-    "groq (>=0.33.0,<0.34.0)"
+    "groq (>=0.33.0,<0.34.0)",
+    "phonenumbers (>=9.0.17,<10.0.0)"
 ]
 
 [tool.poetry]

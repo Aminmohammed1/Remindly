@@ -1,14 +1,16 @@
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Request
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 import dateparser
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime, timedelta
+from datetime import timedelta
 import os
 from dotenv import load_dotenv
 from groq import Groq
-import json
+import phonenumbers
+from phonenumbers import timezone as phonenumbers_timezone
+import json 
+import re
 
 # Load .env
 load_dotenv()
@@ -20,7 +22,7 @@ account_sid = os.getenv("TWILIO_ACCOUNT_SID")
 auth_token = os.getenv("TWILIO_AUTH_TOKEN")
 number=os.getenv("NUMBER")
 client = Client(account_sid, auth_token)
-twilio_whatsapp_number = "whatsapp:+14155238886"
+twilio_whatsapp_number = f"whatsapp:{os.getenv('TWILIO_WHATSAPP_NUMBER')}"
 
 twilio_client = Client(account_sid, auth_token)
 scheduler = BackgroundScheduler()
@@ -54,7 +56,14 @@ async def whatsapp_bot(request: Request):
     task, datetime_str, call_intent, reply = parse_with_llm(msg)
     print(f"call_intent: {call_intent}")
     print(f"Extracted task: {task}, datetime string: {datetime_str}")
-    parsed_date = dateparser.parse(datetime_str, settings={'PREFER_DATES_FROM': 'future'})
+    user_tz = get_timezone_name_from_number(sender)
+    print(f"Detected timezone for {sender}: {user_tz}")
+    parsed_date = dateparser.parse(datetime_str, settings={
+        'PREFER_DATES_FROM': 'future',
+        'TIMEZONE': user_tz,                # ✅ interpret input in user’s zone
+        'RETURN_AS_TIMEZONE_AWARE': True,   # ✅ attach tzinfo
+        'TO_TIMEZONE': user_tz,             
+    })
 
     if parsed_date:
         reminder_time = parsed_date - timedelta(minutes=1)
@@ -80,6 +89,15 @@ async def whatsapp_bot(request: Request):
         from_=twilio_whatsapp_number,
         to=sender
     )
+    
+def get_time_zone():
+    from datetime import datetime
+    import zoneinfo
+    print("Getting local timezone...")
+
+    # Get local time and timezone
+    local_time = datetime.now().astimezone()
+    return local_time.tzinfo
 
 def send_reminder(to, task):
     twilio_client.messages.create(
@@ -87,9 +105,52 @@ def send_reminder(to, task):
         from_=twilio_whatsapp_number,
         to=to
     )
+    
 
-import json
-import re
+def get_timezone_name_from_number(phone_number: str) -> str:
+    """
+    Returns the IANA timezone name (e.g., 'Asia/Kolkata', 'America/New_York')
+    inferred from a phone number.
+
+    Falls back to 'UTC' if no timezone can be determined.
+    """
+    try:
+        # Parse number (Twilio numbers often come like 'whatsapp:+919876543210')
+        if phone_number.startswith("whatsapp:"):
+            phone_number = phone_number.replace("whatsapp:", "")
+
+        parsed_number = phonenumbers.parse(phone_number, None)
+        timezones = phonenumbers_timezone.time_zones_for_number(parsed_number)
+
+        if timezones:
+            print(f"Detected timezones for {phone_number}: {timezones}")
+            return timezones[0]  # Usually one timezone is returned, sometimes more
+
+    except Exception as e:
+        print(f"⚠️ Error determining timezone for {phone_number}: {e}")
+
+    # Fallback
+    return "UTC"
+
+
+
+# def get_the_time_acc_to_country_code(country_code):
+#     """Returns the current time in a given country code."""
+#     # Map country code to timezones
+#     try:
+#         timezones = phonenumbers_timezone.time_zones_for_number(parse(country_code, None))
+#         if timezones:
+#             tz = pytz.timezone(timezones[0])
+#             country_time = datetime.now(tz)
+#             print(f"Current time in {country_code} is {country_time}")
+#             return country_time
+#         else:
+#             print(f"No timezone found for country code {country_code}, defaulting to UTC")
+#             return "UTC"
+#     except Exception as e:
+#         print(f"Error getting timezone for country code {country_code}: {e}")
+#         return "UTC"
+    
 
 def llm_api_call(prompt: str) -> str:
     """Calls the Groq LLM and returns the raw text response."""
